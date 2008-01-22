@@ -2,80 +2,268 @@
 
 from __future__ import with_statement
 from decimal import Decimal, InvalidOperation
-import sys, os, collections, Tkinter, tkFileDialog, csv, pprint
+import sys, os, collections, Tkinter, tkFileDialog, csv
 
-file = None
+def getFileName():
+    """ Get the name of the file to open from the arguments or from the user """
+    if len(sys.argv) > 1:
+        return sys.argv[1]
+    else:
+        # ask for filename
+        root = Tkinter.Tk()
+        root.withdraw()
+        file = tkFileDialog.askopenfilename(filetypes=[('Quickbooks Export', '*.csv')])
+        root.deiconify()
+        return file
+        
+def numericCompare(x, y):
+    return cmp(int(x), int(y))
 
-# find the file to import
-try:
-    file = sys.argv[1]
-except IndexError:
-    root = Tkinter.Tk()
-    root.withdraw()
-    file = tkFileDialog.askopenfilename(filetypes=[("Quickbooks Export", "*.csv")])
-    root.deiconify()
+def getFileToWrite(file):
+    # keep the same filename, just swap the extension
+    dir, file = os.path.split(file)
+    file, ext = file.split('.')
+    return os.path.join(dir, file + '.iif')
 
-# set up messages window
-Tkinter.Label(text="Messages:").pack()
-s = Tkinter.Scrollbar()
-s.pack(side=Tkinter.RIGHT, fill=Tkinter.Y)
-v = Tkinter.Scrollbar(orient=Tkinter.HORIZONTAL)
-v.pack(side=Tkinter.BOTTOM, fill=Tkinter.X)
-lbox = Tkinter.Listbox(width=80, height=12)
-lbox.pack(expand=True, fill=Tkinter.BOTH, side=Tkinter.TOP)
-s.config(command=lbox.yview)
-lbox.config(yscrollcommand=s.set)
-v.config(command=lbox.xview)
-lbox.config(xscrollcommand=v.set)
+def getLogFile(file):
+    dir, file = os.path.split(file)
+    file, ext = file.split('.')
+    return os.path.join(dir, file + '.log')
 
-if not file:
-    lbox.insert(Tkinter.END, "No file to convert, quitting ...")
-    Tkinter.mainloop()
-    exit()
+class MessageWindow():
+    """ Displays error messages using tkinter """
+    def __init__(self, file):
+        # set up messages window
+        Tkinter.Label(text='Messages:').pack()
+        s = Tkinter.Scrollbar()
+        s.pack(side=Tkinter.RIGHT, fill=Tkinter.Y)
+        v = Tkinter.Scrollbar(orient=Tkinter.HORIZONTAL)
+        v.pack(side=Tkinter.BOTTOM, fill=Tkinter.X)
+        lbox = Tkinter.Listbox(width=80, height=12)
+        lbox.pack(expand=True, fill=Tkinter.BOTH, side=Tkinter.TOP)
+        s.config(command=lbox.yview)
+        lbox.config(yscrollcommand=s.set)
+        v.config(command=lbox.xview)
+        lbox.config(xscrollcommand=v.set)
+        self.lbox = lbox
+        logFile = getLogFile(file)
+        self.log = open(logFile, 'w')
 
-transactionMap = collections.defaultdict(list)
-with open(file) as f:
+    def insert(self, text):
+        self.lbox.insert(Tkinter.END, text)
+        self.log.write(text + '\n')
 
-    reader = csv.reader(f)
-
-    # parse header columns
-    columnArray = reader.next()
-    columnArray[0] = 'AccountName'
-    
-    currentAccount = []
-
-    try:
-        # loop through data
-        for line in reader:
-            # if the first column has data it is the account data
-            if line[0]:
-                if line[0].startswith('Total'):
-                    currentAccount.pop()
-                elif line[0] == 'TOTAL':
-                    break;
-                else:
-                    currentAccount.append(line[0])
-            else:
-                # create a map of the data:  column->data
-                newMap = {}
-                for i, data in enumerate(line):
-                    newMap[columnArray[i]] = data
-
-                # fix data
-                try:
-                    amount = Decimal(newMap['Amount'])
-                except InvalidOperation:
-                    amount = Decimal(0)
-
-                newMap['Amount'] = amount
-
-                newMap['AccountName'] = list(currentAccount)
-                transactionMap[newMap['Trans #']].append(newMap)
-
-    except csv.Error, e:
-        lbox.insert(Tkinter.END, 'Could not parse file (line number %s)' % reader.line_num)
+    def show(self):
         Tkinter.mainloop()
+        self.log.close()
         exit()
+
+class ParseError(Exception):
+    pass
+
+class NotImplementedError(Exception):
+    pass
+
+class VoidError(Exception):
+    pass
+
+class ColumnsInvalidError(Exception):
+    pass
+
+def checkColumns(columnArray):
+    """ Check that all needed columns of data are available """
+    for column in ('AccountName', 'Trans #', 'Type', 'Split', 'Date', 'Name', 'Memo'):
+        if column not in columnArray:
+            raise ColumnsInvalidError('The necessary column "%s" was not found in the input file' % column)
+
+    if 'Amount' not in columnArray and ('Debit' not in columnArray or 'Credit' not in columnArray):
+        raise ColumnsInvalidError('The necessary column "Amount" was not found in the input file')
+    
+def getDecimal(value):
+    """ Return a decimal value from a string """
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        amount = Decimal(0)
+    return amount
+
+# use a stack to keep track of the current account
+currentAccount = []
+def getDataRow(line, columnArray):
+    """ Parse a row of the quickbooks data and return the result as a map """
+    global currentAccount
+    
+    # if this is a row specifying the account then push or pop the account
+    if line[0]:
+        if line[0].startswith('Total'):
+            currentAccount.pop()
+        elif line[0] == 'TOTAL':
+            return None
+        else:
+            currentAccount.append(line[0])
+        return None
+    else:
+        # make a map
+        new = {}
+        for i, data in enumerate(line):
+            new[columnArray[i]] = data
+
+        # Fix data being read
+        if 'Credit' in columnArray and 'Debit' in columnArray:
+            credit = getDecimal(new['Credit'])
+            debit = getDecimal(new['Debit']) * -1
+            new['Amount'] = credit if credit > 0 else debit
+        else:
+            new['Amount'] = getDecimal(new['Amount'])
+
+        new['AccountName'] = list(currentAccount)
+    return new
+
+def parseFile(file, messageWindow):
+    """ Read a csv file and parse the data into a list """
+    transactions = []
+
+    with open(file) as f:
+
+        reader = csv.reader(f)
+
+        # parse header columns
+        columnArray = reader.next()
+        columnArray[0] = 'AccountName'
+    
+        # check to make sure we have all the needed columns
+        try:
+            checkColumns(columnArray)
+        except ColumnsInvalidError, e:
+            messageWindow.insert(e)
+            messageWindow.show()
+
+        transaction = []
+        try:
+            # loop through data
+            for line in reader:
+                transaction = getDataRow(line, columnArray)
+                if transaction is not None:
+                    transactions.append(transaction)
+        except csv.Error, e:
+            messageWindow.insert('Could not parse file (line number %s)' % reader.line_num)
+            messageWindow.show()
+
+    return transactions
+
+def indexById(transactions):
+    """ Index the transactions by the Trans # """
+    transMap = collections.defaultdict(list)
+
+    for trans in transactions:
+        transId = trans['Trans #']
+        transMap[transId].append(trans)
+
+    return transMap
+
+def writeTransaction(trans, splits, f):
+    global transTemplate
+    global splitTemplate
+    global transEnd
+
+    # create the main transaction
+    accountName = trans['AccountName'][-1]
+    tType = trans['Type']
+    date = trans['Date']
+    name = trans['Name']
+    amount = trans['Amount']
+    memo = trans['Memo']
+    cleared = 'N'
+    toPrint = 'N'
+    address1 = ''
+    address2 = ''
+
+    trans = transTemplate % (tType, date, accountName, name, amount, memo, cleared, toPrint, address1, address2)
+    f.write(trans)
+
+    # create the splits
+    for spl in splits:
+        splAccount = spl['AccountName'][-1]
+        splAmount = spl['Amount']
+        splCleared = 'N'
+        splString = splitTemplate % (tType, date, splAccount, name, splAmount, memo, splCleared)
+        f.write(splString)
+
+    f.write(transEnd)
+
+
+def generateIIF(newFile, transactions, messageWindow):
+    global fileStart
+    
+    # don't handle any type of transaction other than check and deposit
+    typesNotImplemented = [set(), []]
+    voidErrors = []
+
+    # any transaction that fails with be shown to the user
+    failures = []
+    
+    with open(newFile, 'w') as f:
+        f.write(fileStart)
+
+        for transId, transactions in transactionMap.iteritems():
+            try:
+                trans, splits = decipherTransactions(transactions)
+                
+                writeTransaction(trans, splits, f)
+            except ParseError, e:
+                messageWindow.insert('%s - %s' % (transId, e))
+            except NotImplementedError, e:
+                typesNotImplemented[0].add(str(e))
+                typesNotImplemented[1].append(transId)
+            except VoidError, e:
+                voidErrors.append(transId)
+
+    if typesNotImplemented[0]:
+        typesNotImplemented[1].sort(cmp=numericCompare)
+        messageWindow.insert('This program in not yet able to translate any of these types %s.  These transactions were not added %s' % (list(typesNotImplemented[0]), typesNotImplemented[1]))
+    if voidErrors:
+        voidErrors.sort(cmp=numericCompare)
+        messageWindow.insert('Some transactions could not be written.  This could be caused by a transaction amount of $0.00 (i.e. a voided check).  These transactions were not added %s' % voidErrors)
+
+def decipherTransactions(transactions):
+    outgoing = ['Check']
+    incoming = ['Deposit']
+
+    tType = transactions[0]['Type']
+
+    if tType in outgoing:
+        tranList = [ val for val in transactions if val['Amount'] < 0 ]
+        splits =  [ val for val in transactions if val['Amount'] > 0 ]
+    elif tType in incoming:
+        tranList = [ val for val in transactions if val['Amount'] > 0 ]
+        splits =  [ val for val in transactions if val['Amount'] < 0 ]
+    else:
+        raise NotImplementedError(tType)
+
+    if len(tranList) != 1:
+        raise VoidError('There was a problem deciphering the data, possibly because the transaction amount is $0.00')
+
+    trans = tranList[0]
+
+    # if there are no splits try to recreate them
+    if len(splits) == 0:
+        if trans['Split'] == '-SPLIT-':
+            raise ParseError('Can not resolve the split values')
+        elif trans['Split'] == '':
+            raise ParseError('There are no splits specified')
+        else:
+            spl = dict(trans)
+            spl['Amount'] = -1 * spl['Amount']
+            spl['AccountName'], spl['Split'] = [ spl['Split'] ], spl['AccountName'][-1]
+            splits.append(spl)
+
+    # check to make sure splits add up
+    tranSum = -Decimal(trans['Amount'])
+    splitSum = sum([ val['Amount'] for val in splits ])
+    if not tranSum == splitSum:
+        raise ParseError('The sum of the splits does not equal the total of the transaction')
+
+    return trans, splits
 
 # handle data
 fileStart = """\
@@ -83,106 +271,34 @@ fileStart = """\
 !SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\tCLEAR\tQNTY\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
 !ENDTRNS
 """
-transEnd = """\
-ENDTRNS
-"""
 transTemplate = """\
 TRNS\t\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
 """
 splitTemplate = """\
 SPL\t\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
 """
+transEnd = """\
+ENDTRNS
+"""
 
-# keep the same filename, just swap the extension
-dir, file = os.path.split(file)
-file, ext = file.split('.')
-newFile = os.path.join(dir, file + '.iif')
+if __name__ == '__main__':
 
-typesNotImplemented = [set(), []]
+    # get file to open
+    file = getFileName()
 
-with open(newFile, 'w') as f:
-    f.write(fileStart)	
+    # get error message window
+    messageWindow = MessageWindow(file)
 
-    tranFailures = []
-    outgoing = ['Check']
-    incoming = ['Deposit']
+    if not file:
+        messageWindow.insert('No file to convert, quitting ...')
+        messageWindow.show()
 
-    for key, value in transactionMap.iteritems():
+    newFile = getFileToWrite(file)
 
-        # find out what the main transaction item is and what the split items are
-        tType = value[0]['Type']
-        if tType in outgoing:
-            tranList = [ val for val in value if Decimal(val['Amount']) < 0 ]
-            splList =  [ val for val in value if Decimal(val['Amount']) > 0 ]
-        elif tType in incoming:
-            tranList = [ val for val in value if Decimal(val['Amount']) > 0 ]
-            splList =  [ val for val in value if Decimal(val['Amount']) < 0 ]
-        else:
-            typesNotImplemented[0].add(tType)
-            typesNotImplemented[1].append(key)
-            #tranFailures.append((value, "Transaction type not implemented"))
-            continue
+    transactions = parseFile(file, messageWindow)
+    transactionMap = indexById(transactions)
 
-        if len(tranList) != 1:
-            tranFailures.append((value, "There was a problem deciphering the data, possibly because the transaction amount is $0.00"))
-            continue
+    generateIIF(newFile, transactionMap, messageWindow)
 
-        if len(tranList) > 1:
-            print key, ' bigger than 1'
-
-        # there is only one main transaction
-        trans = tranList[0]
-                
-        # try to create a split if possible
-        if len(splList) == 0:
-            if trans['Split'] == '-SPLIT-':
-                tranFailures.append((value, "Can not resolve the split values"))
-            elif trans['Split'] == '':
-                pass
-            else:
-                spl = dict(trans)
-                spl['Amount'] = -1
-                spl['AccountName'], spl['Split'] = spl['Split'], spl['AccountName']
-                splList.append(spl)
-
-        # test to make sure the splits add up
-        tranSum = -Decimal(trans['Amount'])
-        splSum = sum([ Decimal(val['Amount']) for val in splList ])
-        if not tranSum == splSum:
-            tranFailures.append((value, "The sum of the splits does not equal the total of the transaction"))
-            continue
-
-        # create the main transaction
-        accountName = trans['AccountName'][-1]
-        tType = trans['Type']
-        date = trans['Date']
-        name = trans['Name']
-        amount = trans['Amount']
-        memo = trans['Memo']
-        cleared = 'N'
-        toPrint = 'N'
-        address1 = ''
-        address2 = ''
-
-        trans = transTemplate % (tType, date, accountName, name, amount, memo, cleared, toPrint, address1, address2)
-        f.write(trans)
-
-        # create the splits
-        for spl in splList:
-            splAccount = spl['AccountName'][-1]
-            splAmount = spl['Amount']
-            splCleared = 'N'
-            splString = splitTemplate % (tType, date, splAccount, name, splAmount, memo, splCleared)
-            f.write(splString)
-
-        f.write(transEnd)
-
-# handle failures
-for failure in tranFailures:
-    lbox.insert(Tkinter.END, '%s - %s' % (failure[0][0]['Trans #'], failure[1]))
-if typesNotImplemented[0]:
-    lbox.insert(Tkinter.END, 'Any transaction with a type of %s was not exported.  These transactions were: %s' % ([x for x in typesNotImplemented[0]], typesNotImplemented[1]))
-
-lbox.insert(Tkinter.END, "File created: %s" % newFile)    
-lbox.insert(Tkinter.END, "Finished processing file %s" % file)    
-Tkinter.mainloop()
+    messageWindow.insert('File created: %s' % newFile)
+    messageWindow.show()

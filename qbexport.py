@@ -15,7 +15,7 @@ def getFileName():
         file = tkFileDialog.askopenfilename(filetypes=[('Quickbooks Export', '*.csv')])
         root.deiconify()
         return file
-        
+
 def numericCompare(x, y):
     return cmp(int(x), int(y))
 
@@ -46,8 +46,11 @@ class MessageWindow():
         v.config(command=lbox.xview)
         lbox.config(xscrollcommand=v.set)
         self.lbox = lbox
-        logFile = getLogFile(file)
-        self.log = open(logFile, 'w')
+        if file:
+            logFile = getLogFile(file)
+            self.log = open(logFile, 'w')
+        else:
+            self.log = sys.stdout
 
     def insert(self, text):
         self.lbox.insert(Tkinter.END, text)
@@ -55,8 +58,9 @@ class MessageWindow():
 
     def show(self):
         Tkinter.mainloop()
-        self.log.close()
-        exit()
+        if self.log != sys.stdout:
+            self.log.close()
+        sys.exit(0)
 
 class ParseError(Exception):
     pass
@@ -78,7 +82,7 @@ def checkColumns(columnArray):
 
     if 'Amount' not in columnArray and ('Debit' not in columnArray or 'Credit' not in columnArray):
         raise ColumnsInvalidError('The necessary column "Amount" was not found in the input file')
-    
+
 def getDecimal(value):
     """ Return a decimal value from a string """
     try:
@@ -92,7 +96,7 @@ currentAccount = []
 def getDataRow(line, columnArray):
     """ Parse a row of the quickbooks data and return the result as a map """
     global currentAccount
-    
+
     # if this is a row specifying the account then push or pop the account
     if line[0]:
         if line[0].startswith('Total'):
@@ -110,9 +114,9 @@ def getDataRow(line, columnArray):
 
         # Fix data being read
         if 'Credit' in columnArray and 'Debit' in columnArray:
-            credit = getDecimal(new['Credit'])
-            debit = getDecimal(new['Debit']) * -1
-            new['Amount'] = credit if credit > 0 else debit
+            credit = -getDecimal(new['Credit'])
+            debit = getDecimal(new['Debit'])
+            new['Amount'] = credit if credit else debit
         else:
             new['Amount'] = getDecimal(new['Amount'])
 
@@ -130,7 +134,7 @@ def parseFile(file, messageWindow):
         # parse header columns
         columnArray = reader.next()
         columnArray[0] = 'AccountName'
-    
+
         # check to make sure we have all the needed columns
         try:
             checkColumns(columnArray)
@@ -167,26 +171,27 @@ def writeTransaction(trans, splits, f):
     global transEnd
 
     # create the main transaction
-    accountName = trans['AccountName'][-1]
+    accountName = ':'.join(trans['AccountName'])
     tType = trans['Type']
     date = trans['Date']
     name = trans['Name']
     amount = trans['Amount']
     memo = trans['Memo']
+    num = trans['Num'] if trans['Num'] else ''
     cleared = 'N'
     toPrint = 'N'
     address1 = ''
     address2 = ''
 
-    trans = transTemplate % (tType, date, accountName, name, amount, memo, cleared, toPrint, address1, address2)
+    trans = transTemplate % (tType, date, accountName, name, amount, num, memo, cleared, toPrint, address1, address2)
     f.write(trans)
 
     # create the splits
     for spl in splits:
-        splAccount = spl['AccountName'][-1]
+        splAccount = ':'.join(spl['AccountName'])
         splAmount = spl['Amount']
         splCleared = 'N'
-        splString = splitTemplate % (tType, date, splAccount, name, splAmount, memo, splCleared)
+        splString = splitTemplate % (tType, date, splAccount, name, splAmount, num, memo, splCleared)
         f.write(splString)
 
     f.write(transEnd)
@@ -194,21 +199,21 @@ def writeTransaction(trans, splits, f):
 
 def generateIIF(newFile, transactions, messageWindow):
     global fileStart
-    
+
     # don't handle any type of transaction other than check and deposit
     typesNotImplemented = [set(), []]
     voidErrors = []
 
     # any transaction that fails with be shown to the user
     failures = []
-    
+
     with open(newFile, 'w') as f:
         f.write(fileStart)
 
         for transId, transactions in transactionMap.iteritems():
             try:
                 trans, splits = decipherTransactions(transactions)
-                
+
                 writeTransaction(trans, splits, f)
             except ParseError, e:
                 messageWindow.insert('%s - %s' % (transId, e))
@@ -237,6 +242,9 @@ def decipherTransactions(transactions):
     elif tType in incoming:
         tranList = [ val for val in transactions if val['Amount'] > 0 ]
         splits =  [ val for val in transactions if val['Amount'] < 0 ]
+    elif transactions[0]['Amount'] == 0:
+        tranList = [ val for val in transactions if val['Split'] == 'void' ]
+        splits = [ val for val in transactions if val['Split'] != 'void' ]
     else:
         raise NotImplementedError(tType)
 
@@ -272,10 +280,10 @@ fileStart = """\
 !ENDTRNS
 """
 transTemplate = """\
-TRNS\t\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
+TRNS\t\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
 """
 splitTemplate = """\
-SPL\t\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
+SPL\t\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
 """
 transEnd = """\
 ENDTRNS

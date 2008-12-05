@@ -976,7 +976,8 @@ Source: dist\tk85.dll; DestDir: {app}\dist\
 Source: dist\unicodedata.pyd; DestDir: {app}\dist\
 Source: dist\w9xpopen.exe; DestDir: {app}\dist\
 Source: dist\_tkinter.pyd; DestDir: {app}\dist\
+Source: qbexport.ico; DestDir: {app}
 
 [Icons]
-Name: {group}\QbExport; Filename: {app}\dist\qbexport.exe; WorkingDir: {app}; IconFilename: {app}\qbexport.ico; IconIndex: 0
+Name: {group}\QbExport; Filename: {app}\dist\qbexport.exe; WorkingDir: {app}; IconFilename: {app}\qbexport.ico
 Name: {group}\Uninstall; Filename: {app}\unins000; WorkingDir: {app}; IconFilename: {app}\qbexport.ico; IconIndex: 0

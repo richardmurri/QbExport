@@ -16,30 +16,32 @@ class TestSequenceFunctions(unittest.TestCase):
 
     def testGetFileToWrite(self):
         files = [ ('test.csv', 'test.iif'), ('how.csv', 'how.iif') ]
-        for file, result in files:
-            self.assertTrue(result == getFileToWrite(file))
+        for file_, result in files:
+            self.assertTrue(result == get_iif_filename(file_))
 
     def testCheckColumns(self):
+        fileparser = FileParser('test', None)
         columns = [ 'AccountName', 'Trans #', 'Type', 'Split', 'Date', 'Name', 'Memo']
-        self.assertRaises(ColumnsInvalidError, checkColumns, columns)
+        self.assertRaises(ColumnsInvalidError, fileparser.check_columns, columns)
         columns.append('Amount')
-        checkColumns(columns)
+        fileparser.check_columns(columns)
         columns.remove('Amount')
         columns.append('Debit')
-        self.assertRaises(ColumnsInvalidError, checkColumns, columns)
+        self.assertRaises(ColumnsInvalidError, fileparser.check_columns, columns)
         columns.append('Credit')
-        checkColumns(columns)
+        fileparser.check_columns(columns)
         columns.remove('Debit')
-        self.assertRaises(ColumnsInvalidError, checkColumns, columns)
+        self.assertRaises(ColumnsInvalidError, fileparser.check_columns, columns)
 
     def testGetDecimal(self):
-        self.assertTrue(0 == getDecimal(''))
-        self.assertTrue(2 == getDecimal('2'))
-        self.assertTrue(Decimal('2.0') == getDecimal('2.0'))
+        fileparser = FileParser('test', None)
+        self.assertTrue(0 == fileparser.get_decimal(''))
+        self.assertTrue(2 == fileparser.get_decimal('2'))
+        self.assertTrue(Decimal('2.0') == fileparser.get_decimal('2.0'))
 
     def testGetDataRow(self):
+        fileparser = FileParser('test', None)
         data = [
-
             ("Sterling MM #17656",'','','','','','','','','','',""),
             ('',"1322","Deposit","12/30/2000",'',"from year end",'','',"Opening Balance",'209988.90',"",'209988.90','-209988.90'),
             ('',"75","Deposit","4/11/2001",'',"transfer",'','',"#3923 (Reed)","",'10000.00','199988.90','10000'),
@@ -67,7 +69,7 @@ class TestSequenceFunctions(unittest.TestCase):
         columns = ['AccountName',"Trans #","Type","Date","Num","Name","Memo","Clr","Split","Debit","Credit","Balance", 'Nothin']
 
         for line, value in zip(data, results):
-            result = getDataRow(line, columns)
+            result = fileparser.get_data_row(line, columns)
             
             if result == None:
                 self.assertTrue(value == None)
@@ -80,7 +82,7 @@ class TestSequenceFunctions(unittest.TestCase):
         columns = ['AccountName',"Trans #","Type","Date","Num","Name","Memo","Clr","Split","Deb","Cdit","Balance", 'Amount']
 
         for line, value in zip(data, results):
-            result = getDataRow(line, columns)
+            result = fileparser.get_data_row(line, columns)
             
             if result == None:
                 self.assertTrue(value == None)
@@ -91,26 +93,12 @@ class TestSequenceFunctions(unittest.TestCase):
                     self.assertTrue(value[i] == v)
 
 
-    def testIndexById(self):
-        data = [
-            {'Trans #':'1', 'id':1},
-            {'Trans #':'1', 'id':2},
-            {'Trans #':'1', 'id':3},
-            {'Trans #':'2', 'id':4}
-            ]
-        result = {
-            '1':[{'Trans #':'1', 'id':1}, {'Trans #':'1', 'id':2}, {'Trans #':'1', 'id':3}],
-            '2':[{'Trans #':'2', 'id':4}]
-            }
-
-        r = indexById(data)
-        self.assertTrue(r == result)
-
     def testWriteTransaction(self):
+        generator = IIFGenerator('test', None)
         trans = {'AccountName':['Test'], 'Type':'Check', 'Date':'1/2/34', 'Name':'Test', 'Amount':'50', 'Memo':'None'}
         splits = [{'AccountName':['asdf'], 'Amount':'34.50'}, {'AccountName':['asdf'], 'Amount':'34.50'}]
         file = StringIO.StringIO()
-        writeTransaction(trans, splits, file)
+        generator.write_transaction(trans, splits, file)
 
         testval = """\
 TRNS\t\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t
@@ -122,7 +110,10 @@ ENDTRNS
         self.assertTrue(testval == file.getvalue())
         file.close()
 
+
     def testDecipherTransactions(self):
+        generator = IIFGenerator('test', None)
+        fileparser = FileParser('test', None)
         columns = ['AccountName',"Trans #","Type","Date","Num","Name","Memo","Clr","Split","Debit","Credit","Balance", 'Nothin']
         data = [
             ("Sterling MM #17656",'','','','','','','','','','',""),
@@ -140,23 +131,26 @@ ENDTRNS
             ("Total #3923 (Reed)",'','','','','','','','','2585108.20','2601597.58','-16489.38')
             ]
 
-        transactions = [ getDataRow(x,columns) for x in data if getDataRow(x, columns) != None ]
-        transactionMap = indexById(transactions)
+        transactions = [ fileparser.get_data_row(x,columns) for x in data if fileparser.get_data_row(x, columns) != None ]
+        transactionMap = collections.defaultdict(list)
+        for trans in transactions:
+            transId = trans['Trans #']
+            transactionMap[transId].append(trans)
 
-        trans, splits = decipherTransactions(transactionMap['1322'])
+        trans, splits = generator.decipher_transactions(transactionMap['1322'])
         self.assertTrue(trans == transactions[0])
         self.assertTrue(splits == [ transactions[7], transactions[8] ])
-        self.assertRaises(ParseError, decipherTransactions, transactionMap['75'])
-        trans, splits = decipherTransactions(transactionMap['106'])
+        self.assertRaises(VoidError, generator.decipher_transactions, transactionMap['75'])
+        trans, splits = generator.decipher_transactions(transactionMap['106'])
         self.assertTrue(trans == transactions[2])            
         self.assertTrue(splits == [ transactions[5]])
-        trans, splits = decipherTransactions(transactionMap['108'])
+        trans, splits = generator.decipher_transactions(transactionMap['108'])
         self.assertTrue(trans == transactions[3])
         self.assertTrue(len(splits) == 1)
         self.assertTrue(splits[0]['Amount'] == Decimal('-55000'))
         self.assertTrue(splits[0]['Split'] == 'Sterling MM #17656')
         self.assertTrue(splits[0]['AccountName'] == ['split'])
-        self.assertRaises(ParseError, decipherTransactions, transactionMap['109'])
+        self.assertRaises(ParseError, generator.decipher_transactions, transactionMap['109'])
 
 
 if __name__ == '__main__':
